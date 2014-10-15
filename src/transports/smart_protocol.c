@@ -314,7 +314,7 @@ static int wait_while_ack(gitno_buffer *buf)
 			break;
 
 		if (pkt->type == GIT_PKT_ACK &&
-		    (pkt->status != GIT_ACK_CONTINUE ||
+		    (pkt->status != GIT_ACK_CONTINUE &&
 		     pkt->status != GIT_ACK_COMMON)) {
 			git__free(pkt);
 			return 0;
@@ -592,7 +592,9 @@ int git_smart__download_pack(
 				}
 			} else if (pkt->type == GIT_PKT_DATA) {
 				git_pkt_data *p = (git_pkt_data *) pkt;
-				error = writepack->append(writepack, p->data, p->len, stats);
+
+				if (p->len)
+					error = writepack->append(writepack, p->data, p->len, stats);
 			} else if (pkt->type == GIT_PKT_FLUSH) {
 				/* A flush indicates the end of the packfile */
 				git__free(pkt);
@@ -638,9 +640,9 @@ static int gen_pktline(git_buf *buf, git_push *push)
 {
 	push_spec *spec;
 	size_t i, len;
-	char old_id[41], new_id[41];
+	char old_id[GIT_OID_HEXSZ+1], new_id[GIT_OID_HEXSZ+1];
 
-	old_id[40] = '\0'; new_id[40] = '\0';
+	old_id[GIT_OID_HEXSZ] = '\0'; new_id[GIT_OID_HEXSZ] = '\0';
 
 	git_vector_foreach(&push->specs, i, spec) {
 		len = 2*GIT_OID_HEXSZ + 7 + strlen(spec->rref);
@@ -961,7 +963,7 @@ int git_smart__push(git_transport *transport, git_push *push)
 #ifdef PUSH_DEBUG
 {
 	git_remote_head *head;
-	char hex[41]; hex[40] = '\0';
+	char hex[GIT_OID_HEXSZ+1]; hex[GIT_OID_HEXSZ] = '\0';
 
 	git_vector_foreach(&push->remote->refs, i, head) {
 		git_oid_fmt(hex, &head->oid);

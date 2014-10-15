@@ -306,9 +306,12 @@ GIT_EXTERN(int) git_remote_ls(const git_remote_head ***out,  size_t *size, git_r
  * The .idx file will be created and both it and the packfile with be
  * renamed to their final name.
  *
+ * @param remote the remote
+ * @param refspecs the refspecs to use for this negotiation and
+ * download. Use NULL or an empty array to use the base refspecs
  * @return 0 or an error code
  */
-GIT_EXTERN(int) git_remote_download(git_remote *remote);
+GIT_EXTERN(int) git_remote_download(git_remote *remote, const git_strarray *refspecs);
 
 /**
  * Check whether the remote is connected
@@ -373,6 +376,8 @@ GIT_EXTERN(int) git_remote_update_tips(
  * disconnect and update the remote-tracking branches.
  *
  * @param remote the remote to fetch from
+ * @param refspecs the refspecs to use for this fetch. Pass NULL or an
+ *                 empty array to use the base refspecs.
  * @param signature The identity to use when updating reflogs
  * @param reflog_message The message to insert into the reflogs. If NULL, the
  *								 default is "fetch"
@@ -380,19 +385,17 @@ GIT_EXTERN(int) git_remote_update_tips(
  */
 GIT_EXTERN(int) git_remote_fetch(
 		git_remote *remote,
+		const git_strarray *refspecs,
 		const git_signature *signature,
 		const char *reflog_message);
 
 /**
- * Return whether a string is a valid remote URL
  *
- * @param url the url to check
- * @return 1 if the url is valid, 0 otherwise
- */
-GIT_EXTERN(int) git_remote_valid_url(const char *url);
-
-/**
- * Return whether the passed URL is supported by this version of the library.
+ * Return whether the library supports a particular URL scheme
+ *
+ * Both the built-in and externally-registered transport lists are
+ * searched for a transport which supports the scheme of the given
+ * URL.
  *
  * @param url the url to check
  * @return 1 if the url is supported, 0 otherwise
@@ -409,30 +412,6 @@ GIT_EXTERN(int) git_remote_supported_url(const char* url);
  * @return 0 or an error code
  */
 GIT_EXTERN(int) git_remote_list(git_strarray *out, git_repository *repo);
-
-/**
- * Choose whether to check the server's certificate (applies to HTTPS only)
- *
- * @param remote the remote to configure
- * @param check whether to check the server's certificate (defaults to yes)
- */
-GIT_EXTERN(void) git_remote_check_cert(git_remote *remote, int check);
-
-/**
- * Sets a custom transport for the remote. The caller can use this function
- * to bypass the automatic discovery of a transport by URL scheme (i.e.
- * http://, https://, git://) and supply their own transport to be used
- * instead. After providing the transport to a remote using this function,
- * the transport object belongs exclusively to that remote, and the remote will
- * free it when it is freed with git_remote_free.
- *
- * @param remote the remote to configure
- * @param transport the transport object for the remote to use
- * @return 0 or an error code
- */
-GIT_EXTERN(int) git_remote_set_transport(
-	git_remote *remote,
-	git_transport *transport);
 
 /**
  * Argument to the completion callback which tells it which operation
@@ -473,6 +452,14 @@ struct git_remote_callbacks {
 	 * though this field isn't set.
 	 */
 	git_cred_acquire_cb credentials;
+
+	/**
+	 * If cert verification fails, this will be called to let the
+	 * user make the final decision of whether to allow the
+	 * connection to proceed. Returns 1 to allow the connection, 0
+	 * to disallow it or a negative value to indicate an error.
+	 */
+        git_transport_certificate_check_cb certificate_check;
 
 	/**
 	 * During the download of new data, this will be regularly
@@ -615,10 +602,11 @@ GIT_EXTERN(int) git_remote_is_valid_name(const char *remote_name);
 * All remote-tracking branches and configuration settings
 * for the remote will be removed.
 *
-* @param remote A valid remote
+* @param repo the repository in which to act
+* @param name the name of the remove to delete
 * @return 0 on success, or an error code.
 */
-GIT_EXTERN(int) git_remote_delete(git_remote *remote);
+GIT_EXTERN(int) git_remote_delete(git_repository *repo, const char *name);
 
 /**
  * Retrieve the name of the remote's default branch

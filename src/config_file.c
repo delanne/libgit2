@@ -1163,7 +1163,7 @@ static int strip_comments(char *line, int in_quotes)
 	}
 
 	/* skip any space at the end */
-	if (ptr > line && git__isspace(ptr[-1])) {
+	while (ptr > line && git__isspace(ptr[-1])) {
 		ptr--;
 	}
 	ptr[0] = '\0';
@@ -1522,6 +1522,9 @@ static int config_write(diskfile_backend *cfg, const char *key, const regex_t *p
 
 			git_filebuf_write(&file, reader->buffer.ptr, reader->buffer.size);
 
+			if (reader->buffer.size > 0 && *(reader->buffer.ptr + reader->buffer.size - 1) != '\n')
+				git_filebuf_write(&file, "\n", 1);
+
 			/* And now if we just need to add a variable */
 			if (!section_matches && write_section(&file, section) < 0)
 				goto rewrite_fail;
@@ -1536,9 +1539,6 @@ static int config_write(diskfile_backend *cfg, const char *key, const regex_t *p
 			}
 
 			/* If we are here, there is at least a section line */
-			if (reader->buffer.size > 0 && *(reader->buffer.ptr + reader->buffer.size - 1) != '\n')
-				git_filebuf_write(&file, "\n", 1);
-
 			q = quotes_for_value(value);
 			git_filebuf_printf(&file, "\t%s = %s%s%s\n", name, q, value, q);
 		}
@@ -1649,7 +1649,7 @@ static int is_multiline_var(const char *str)
 	}
 
 	/* An odd number means last backslash wasn't escaped, so it's multiline */
-	return (end > str) && (count & 1);
+	return count & 1;
 }
 
 static int parse_multiline_variable(struct reader *reader, git_buf *value, int in_quotes)

@@ -377,26 +377,33 @@ static int error_invalid_local_file_uri(const char *uri)
 	return -1;
 }
 
+static int local_file_url_prefixlen(const char *file_url)
+{
+	int len = -1;
+
+	if (git__prefixcmp(file_url, "file://") == 0) {
+		if (file_url[7] == '/')
+			len = 8;
+		else if (git__prefixcmp(file_url + 7, "localhost/") == 0)
+			len = 17;
+	}
+
+	return len;
+}
+
+bool git_path_is_local_file_url(const char *file_url)
+{
+	return (local_file_url_prefixlen(file_url) > 0);
+}
+
 int git_path_fromurl(git_buf *local_path_out, const char *file_url)
 {
-	int offset = 0, len;
+	int offset;
 
 	assert(local_path_out && file_url);
 
-	if (git__prefixcmp(file_url, "file://") != 0)
-		return error_invalid_local_file_uri(file_url);
-
-	offset += 7;
-	len = (int)strlen(file_url);
-
-	if (offset < len && file_url[offset] == '/')
-		offset++;
-	else if (offset < len && git__prefixcmp(file_url + offset, "localhost/") == 0)
-		offset += 10;
-	else
-		return error_invalid_local_file_uri(file_url);
-
-	if (offset >= len || file_url[offset] == '/')
+	if ((offset = local_file_url_prefixlen(file_url)) < 0 ||
+		file_url[offset] == '\0' || file_url[offset] == '/')
 		return error_invalid_local_file_uri(file_url);
 
 #ifndef GIT_WIN32
@@ -404,14 +411,13 @@ int git_path_fromurl(git_buf *local_path_out, const char *file_url)
 #endif
 
 	git_buf_clear(local_path_out);
-
 	return git__percent_decode(local_path_out, file_url + offset);
 }
 
 int git_path_walk_up(
 	git_buf *path,
 	const char *ceiling,
-	int (*cb)(void *data, git_buf *),
+	int (*cb)(void *data, const char *),
 	void *data)
 {
 	int error = 0;
@@ -429,12 +435,20 @@ int git_path_walk_up(
 	}
 	scan = git_buf_len(path);
 
+	/* empty path: yield only once */
+	if (!scan) {
+		error = cb(data, "");
+		if (error)
+			giterr_set_after_callback(error);
+		return error;
+	}
+
 	iter.ptr = path->ptr;
 	iter.size = git_buf_len(path);
 	iter.asize = path->asize;
 
 	while (scan >= stop) {
-		error = cb(data, &iter);
+		error = cb(data, iter.ptr);
 		iter.ptr[scan] = oldc;
 
 		if (error) {
@@ -453,6 +467,13 @@ int git_path_walk_up(
 
 	if (scan >= 0)
 		iter.ptr[scan] = oldc;
+
+	/* relative path: yield for the last component */
+	if (!error && stop == 0 && iter.ptr[0] != '/') {
+		error = cb(data, "");
+		if (error)
+			giterr_set_after_callback(error);
+	}
 
 	return error;
 }
@@ -494,23 +515,33 @@ bool git_path_is_empty_dir(const char *path)
 		WIN32_FIND_DATAW findData;
 		HANDLE hFind = FindFirstFileW(filter_w, &findData);
 
+		/* FindFirstFile will fail if there are no children to the given
+		 * path, which can happen if the given path is a file (and obviously
+		 * has no children) or if the given path is an empty mount point.
+		 * (Most directories have at least directory entries '.' and '..',
+		 * but ridiculously another volume mounted in another drive letter's
+		 * path space do not, and thus have nothing to enumerate.)  If
+		 * FindFirstFile fails, check if this is a directory-like thing
+		 * (a mount point).
+		 */
+		if (hFind == INVALID_HANDLE_VALUE)
+			return git_path_isdir(path);
+
 		/* If the find handle was created successfully, then it's a directory */
-		if (hFind != INVALID_HANDLE_VALUE) {
-			empty = true;
+		empty = true;
 
-			do {
-				/* Allow the enumeration to return . and .. and still be considered
-				 * empty. In the special case of drive roots (i.e. C:\) where . and
-				 * .. do not occur, we can still consider the path to be an empty
-				 * directory if there's nothing there. */
-				if (!git_path_is_dot_or_dotdotW(findData.cFileName)) {
-					empty = false;
-					break;
-				}
-			} while (FindNextFileW(hFind, &findData));
+		do {
+			/* Allow the enumeration to return . and .. and still be considered
+			 * empty. In the special case of drive roots (i.e. C:\) where . and
+			 * .. do not occur, we can still consider the path to be an empty
+			 * directory if there's nothing there. */
+			if (!git_path_is_dot_or_dotdotW(findData.cFileName)) {
+				empty = false;
+				break;
+			}
+		} while (FindNextFileW(hFind, &findData));
 
-			FindClose(hFind);
-		}
+		FindClose(hFind);
 	}
 
 	return empty;
@@ -744,6 +775,64 @@ int git_path_cmp(
 	return (c1 < c2) ? -1 : (c1 > c2) ? 1 : 0;
 }
 
+int git_path_make_relative(git_buf *path, const char *parent)
+{
+	const char *p, *q, *p_dirsep, *q_dirsep;
+	size_t plen = path->size, newlen, depth = 1, i, offset;
+
+	for (p_dirsep = p = path->ptr, q_dirsep = q = parent; *p && *q; p++, q++) {
+		if (*p == '/' && *q == '/') {
+			p_dirsep = p;
+			q_dirsep = q;
+		}
+		else if (*p != *q)
+			break;
+	}
+
+	/* need at least 1 common path segment */
+	if ((p_dirsep == path->ptr || q_dirsep == parent) &&
+		(*p_dirsep != '/' || *q_dirsep != '/')) {
+		giterr_set(GITERR_INVALID,
+			"%s is not a parent of %s", parent, path->ptr);
+		return GIT_ENOTFOUND;
+	}
+
+	if (*p == '/' && !*q)
+		p++;
+	else if (!*p && *q == '/')
+		q++;
+	else if (!*p && !*q)
+		return git_buf_clear(path), 0;
+	else {
+		p = p_dirsep + 1;
+		q = q_dirsep + 1;
+	}
+
+	plen -= (p - path->ptr);
+
+	if (!*q)
+		return git_buf_set(path, p, plen);
+
+	for (; (q = strchr(q, '/')) && *(q + 1); q++)
+		depth++;
+
+	newlen = (depth * 3) + plen;
+
+	/* save the offset as we might realllocate the pointer */
+	offset = p - path->ptr;
+	if (git_buf_try_grow(path, newlen + 1, 1, 0) < 0)
+		return -1;
+	p = path->ptr + offset;
+
+	memmove(path->ptr + (depth * 3), p, plen + 1);
+
+	for (i = 0; i < depth; i++)
+		memcpy(path->ptr + (i * 3), "../", 3);
+
+	path->size = newlen;
+	return 0;
+}
+
 bool git_path_has_non_ascii(const char *path, size_t pathlen)
 {
 	const uint8_t *scan = (const uint8_t *)path, *end;
@@ -904,7 +993,7 @@ int git_path_direach(
 	path_dirent_data de_data;
 	struct dirent *de, *de_buf = (struct dirent *)&de_data;
 
-	(void)flags;
+	GIT_UNUSED(flags);
 
 #ifdef GIT_USE_ICONV
 	git_path_iconv_t ic = GIT_PATH_ICONV_INIT;
@@ -975,7 +1064,7 @@ int git_path_dirload(
 	path_dirent_data de_data;
 	struct dirent *de, *de_buf = (struct dirent *)&de_data;
 
-	(void)flags;
+	GIT_UNUSED(flags);
 
 #ifdef GIT_USE_ICONV
 	git_path_iconv_t ic = GIT_PATH_ICONV_INIT;
@@ -1027,8 +1116,10 @@ int git_path_dirload(
 			entry_path[path_len] = '/';
 		memcpy(&entry_path[path_len + need_slash], de_path, de_len);
 
-		if ((error = git_vector_insert(contents, entry_path)) < 0)
+		if ((error = git_vector_insert(contents, entry_path)) < 0) {
+			git__free(entry_path);
 			break;
+		}
 	}
 
 	closedir(dir);
@@ -1104,19 +1195,28 @@ int git_path_dirload_with_stat(
 
 		if ((error = git_buf_joinpath(&full, full.ptr, ps->path)) < 0 ||
 			(error = git_path_lstat(full.ptr, &ps->st)) < 0) {
+
 			if (error == GIT_ENOTFOUND) {
-				giterr_clear();
-				error = 0;
+				/* file was removed between readdir and lstat */
 				git_vector_remove(contents, i--);
-				continue;
+			} else {
+				/* Treat the file as unreadable if we get any other error */
+				memset(&ps->st, 0, sizeof(ps->st));
+				ps->st.st_mode = GIT_FILEMODE_UNREADABLE;
 			}
 
-			break;
+			giterr_clear();
+			error = 0;
+			continue;
 		}
 
 		if (S_ISDIR(ps->st.st_mode)) {
 			ps->path[ps->path_len++] = '/';
 			ps->path[ps->path_len] = '\0';
+		}
+		else if (!S_ISREG(ps->st.st_mode) && !S_ISLNK(ps->st.st_mode)) {
+			/* skip everything but dirs, plain files, and symlinks */
+			git_vector_remove(contents, i--);
 		}
 	}
 
@@ -1130,18 +1230,8 @@ int git_path_dirload_with_stat(
 
 int git_path_from_url_or_path(git_buf *local_path_out, const char *url_or_path)
 {
-	int error;
-
-	/* If url_or_path begins with file:// treat it as a URL */
-	if (!git__prefixcmp(url_or_path, "file://")) {
-		if ((error = git_path_fromurl(local_path_out, url_or_path)) < 0) {
-			return error;
-		}
-	} else { /* We assume url_or_path is already a path */
-		if ((error = git_buf_sets(local_path_out, url_or_path)) < 0) {
-			return error;
-		}
-	}
-
-	return 0;
+	if (git_path_is_local_file_url(url_or_path))
+		return git_path_fromurl(local_path_out, url_or_path);
+	else
+		return git_buf_sets(local_path_out, url_or_path);
 }

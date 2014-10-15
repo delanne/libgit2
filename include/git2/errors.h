@@ -42,6 +42,7 @@ typedef enum {
 	GIT_ELOCKED         = -14,	/**< Lock file prevented operation */
 	GIT_EMODIFIED       = -15,	/**< Reference value does not match expected */
 	GIT_EAUTH           = -16,      /**< Authentication error */
+	GIT_ECERTIFICATE    = -17,      /**< Server certificate is invalid */
 
 	GIT_PASSTHROUGH     = -30,	/**< Internal only */
 	GIT_ITEROVER        = -31,	/**< Signals end of iteration with iterator */
@@ -88,6 +89,7 @@ typedef enum {
 	GITERR_REVERT,
 	GITERR_CALLBACK,
 	GITERR_CHERRYPICK,
+	GITERR_DESCRIBE,
 } git_error_t;
 
 /**

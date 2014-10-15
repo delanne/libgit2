@@ -213,6 +213,8 @@ static void verify_tracking_branches(git_remote *remote, expected_ref expected_r
 		cl_assert_equal_i(branch_type, GIT_BRANCH_REMOTE);
 
 		cl_git_pass(git_vector_insert(&actual_refs, git__strdup(git_reference_name(ref))));
+
+		git_reference_free(ref);
 	}
 
 	cl_assert_equal_i(error, GIT_ITEROVER);
@@ -406,7 +408,7 @@ void test_online_push__initialize(void)
 
 	/* Now that we've deleted everything, fetch from the remote */
 	cl_git_pass(git_remote_connect(_remote, GIT_DIRECTION_FETCH));
-	cl_git_pass(git_remote_download(_remote));
+	cl_git_pass(git_remote_download(_remote, NULL));
 	cl_git_pass(git_remote_update_tips(_remote, NULL, NULL));
 	git_remote_disconnect(_remote);
 }
@@ -861,6 +863,8 @@ void test_online_push__notes(void)
 	const char *specs[] = { "refs/notes/commits:refs/notes/commits" };
 	push_status exp_stats[] = { { "refs/notes/commits", 1 } };
 	expected_ref exp_refs[] = { { "refs/notes/commits", &expected_oid } };
+	const char *specs_del[] = { ":refs/notes/commits" };
+
 	git_oid_fromstr(&expected_oid, "8461a99b27b7043e58ff6e1f5d2cf07d282534fb");
 
 	target_oid = &_oid_b6;
@@ -872,6 +876,12 @@ void test_online_push__notes(void)
 	do_push(specs, ARRAY_SIZE(specs),
 		exp_stats, ARRAY_SIZE(exp_stats),
 		exp_refs, ARRAY_SIZE(exp_refs), 0, 1, 1);
+
+	/* And make sure to delete the note */
+
+	do_push(specs_del, ARRAY_SIZE(specs_del),
+		exp_stats, 1,
+		NULL, 0, 0, 0, 0);
 
 	git_signature_free(signature);
 }

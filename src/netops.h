@@ -14,43 +14,33 @@
 # include <openssl/ssl.h>
 #endif
 
-struct gitno_ssl {
+typedef struct gitno_ssl {
 #ifdef GIT_SSL
 	SSL *ssl;
 #else
 	size_t dummy;
 #endif
-};
-
-typedef struct gitno_ssl gitno_ssl;
+} gitno_ssl;
 
 /* Represents a socket that may or may not be using SSL */
-struct gitno_socket {
+typedef struct gitno_socket {
 	GIT_SOCKET socket;
 	gitno_ssl ssl;
-};
+} gitno_socket;
 
-typedef struct gitno_socket gitno_socket;
-
-struct gitno_buffer {
+typedef struct gitno_buffer {
 	char *data;
 	size_t len;
 	size_t offset;
 	gitno_socket *socket;
 	int (*recv)(struct gitno_buffer *buffer);
 	void *cb_data;
-};
-
-typedef struct gitno_buffer gitno_buffer;
+} gitno_buffer;
 
 /* Flags to gitno_connect */
 enum {
 	/* Attempt to create an SSL connection. */
 	GITNO_CONNECT_SSL = 1,
-
-	/* Valid only when GITNO_CONNECT_SSL is also specified.
-	 * Indicates that the server certificate should not be validated. */
-	GITNO_CONNECT_SSL_NO_CHECK_CERT = 2,
 };
 
 /**

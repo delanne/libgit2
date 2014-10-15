@@ -405,6 +405,8 @@ int git_index_open(git_index **index_out, const char *index_path)
 		return -1;
 	}
 
+	git_pool_init(&index->tree_pool, 1, 0);
+
 	if (index_path != NULL) {
 		index->index_file_path = git__strdup(index_path);
 		if (!index->index_file_path)
@@ -435,6 +437,7 @@ int git_index_open(git_index **index_out, const char *index_path)
 	return 0;
 
 fail:
+	git_pool_clear(&index->tree_pool);
 	git_index_free(index);
 	return error;
 }
@@ -517,8 +520,8 @@ int git_index_clear(git_index *index)
 
 	assert(index);
 
-	git_tree_cache_free(index->tree);
 	index->tree = NULL;
+	git_pool_clear(&index->tree_pool);
 
 	if (git_mutex_lock(&index->lock) < 0) {
 		giterr_set(GITERR_OS, "Failed to lock index");
@@ -620,6 +623,9 @@ int git_index_read(git_index *index, int force)
 	error = git_futils_readbuffer(&buffer, index->index_file_path);
 	if (error < 0)
 		return error;
+
+	index->tree = NULL;
+	git_pool_clear(&index->tree_pool);
 
 	error = git_index_clear(index);
 
@@ -1767,35 +1773,42 @@ static size_t read_entry(
 	git_index_entry **out, const void *buffer, size_t buffer_size)
 {
 	size_t path_length, entry_size;
-	uint16_t flags_raw;
 	const char *path_ptr;
-	const struct entry_short *source = buffer;
+	struct entry_short source;
 	git_index_entry entry = {{0}};
 
 	if (INDEX_FOOTER_SIZE + minimal_entry_size > buffer_size)
 		return 0;
 
-	entry.ctime.seconds = (git_time_t)ntohl(source->ctime.seconds);
-	entry.ctime.nanoseconds = ntohl(source->ctime.nanoseconds);
-	entry.mtime.seconds = (git_time_t)ntohl(source->mtime.seconds);
-	entry.mtime.nanoseconds = ntohl(source->mtime.nanoseconds);
-	entry.dev = ntohl(source->dev);
-	entry.ino = ntohl(source->ino);
-	entry.mode = ntohl(source->mode);
-	entry.uid = ntohl(source->uid);
-	entry.gid = ntohl(source->gid);
-	entry.file_size = ntohl(source->file_size);
-	git_oid_cpy(&entry.id, &source->oid);
-	entry.flags = ntohs(source->flags);
+	/* buffer is not guaranteed to be aligned */
+	memcpy(&source, buffer, sizeof(struct entry_short));
+
+	entry.ctime.seconds = (git_time_t)ntohl(source.ctime.seconds);
+	entry.ctime.nanoseconds = ntohl(source.ctime.nanoseconds);
+	entry.mtime.seconds = (git_time_t)ntohl(source.mtime.seconds);
+	entry.mtime.nanoseconds = ntohl(source.mtime.nanoseconds);
+	entry.dev = ntohl(source.dev);
+	entry.ino = ntohl(source.ino);
+	entry.mode = ntohl(source.mode);
+	entry.uid = ntohl(source.uid);
+	entry.gid = ntohl(source.gid);
+	entry.file_size = ntohl(source.file_size);
+	git_oid_cpy(&entry.id, &source.oid);
+	entry.flags = ntohs(source.flags);
 
 	if (entry.flags & GIT_IDXENTRY_EXTENDED) {
-		const struct entry_long *source_l = (const struct entry_long *)source;
-		path_ptr = source_l->path;
+		uint16_t flags_raw;
+		size_t flags_offset;
 
-		flags_raw = ntohs(source_l->flags_extended);
-		memcpy(&entry.flags_extended, &flags_raw, 2);
+		flags_offset = offsetof(struct entry_long, flags_extended);
+		memcpy(&flags_raw, (const char *) buffer + flags_offset,
+			sizeof(flags_raw));
+		flags_raw = ntohs(flags_raw);
+
+		memcpy(&entry.flags_extended, &flags_raw, sizeof(flags_raw));
+		path_ptr = (const char *) buffer + offsetof(struct entry_long, path);
 	} else
-		path_ptr = source->path;
+		path_ptr = (const char *) buffer + offsetof(struct entry_short, path);
 
 	path_length = entry.flags & GIT_IDXENTRY_NAMEMASK;
 
@@ -1846,14 +1859,12 @@ static int read_header(struct index_header *dest, const void *buffer)
 
 static size_t read_extension(git_index *index, const char *buffer, size_t buffer_size)
 {
-	const struct index_extension *source;
 	struct index_extension dest;
 	size_t total_size;
 
-	source = (const struct index_extension *)(buffer);
-
-	memcpy(dest.signature, source->signature, 4);
-	dest.extension_size = ntohl(source->extension_size);
+	/* buffer is not guaranteed to be aligned */
+	memcpy(&dest, buffer, sizeof(struct index_extension));
+	dest.extension_size = ntohl(dest.extension_size);
 
 	total_size = dest.extension_size + sizeof(struct index_extension);
 
@@ -1866,7 +1877,7 @@ static size_t read_extension(git_index *index, const char *buffer, size_t buffer
 	if (dest.signature[0] >= 'A' && dest.signature[0] <= 'Z') {
 		/* tree cache */
 		if (memcmp(dest.signature, INDEX_EXT_TREECACHE_SIG, 4) == 0) {
-			if (git_tree_cache_read(&index->tree, buffer + 8, dest.extension_size) < 0)
+			if (git_tree_cache_read(&index->tree, buffer + 8, dest.extension_size, &index->tree_pool) < 0)
 				return 0;
 		} else if (memcmp(dest.signature, INDEX_EXT_UNMERGED_SIG, 4) == 0) {
 			if (read_reuc(index, buffer + 8, dest.extension_size) < 0)
@@ -2103,16 +2114,13 @@ static int write_entries(git_index *index, git_filebuf *file)
 static int write_extension(git_filebuf *file, struct index_extension *header, git_buf *data)
 {
 	struct index_extension ondisk;
-	int error = 0;
 
 	memset(&ondisk, 0x0, sizeof(struct index_extension));
 	memcpy(&ondisk, header, 4);
 	ondisk.extension_size = htonl(header->extension_size);
 
-	if ((error = git_filebuf_write(file, &ondisk, sizeof(struct index_extension))) == 0)
-		error = git_filebuf_write(file, data->ptr, data->size);
-
-	return error;
+	git_filebuf_write(file, &ondisk, sizeof(struct index_extension));
+	return git_filebuf_write(file, data->ptr, data->size);
 }
 
 static int create_name_extension_data(git_buf *name_buf, git_index_name_entry *conflict_name)
@@ -2218,6 +2226,29 @@ done:
 	return error;
 }
 
+static int write_tree_extension(git_index *index, git_filebuf *file)
+{
+	struct index_extension extension;
+	git_buf buf = GIT_BUF_INIT;
+	int error;
+
+	if (index->tree == NULL)
+		return 0;
+
+	if ((error = git_tree_cache_write(&buf, index->tree)) < 0)
+		return error;
+
+	memset(&extension, 0x0, sizeof(struct index_extension));
+	memcpy(&extension.signature, INDEX_EXT_TREECACHE_SIG, 4);
+	extension.extension_size = (uint32_t)buf.size;
+
+	error = write_extension(file, &extension, &buf);
+
+	git_buf_free(&buf);
+
+	return error;
+}
+
 static int write_index(git_index *index, git_filebuf *file)
 {
 	git_oid hash_final;
@@ -2240,7 +2271,9 @@ static int write_index(git_index *index, git_filebuf *file)
 	if (write_entries(index, file) < 0)
 		return -1;
 
-	/* TODO: write tree cache extension */
+	/* write the tree cache extension */
+	if (index->tree != NULL && write_tree_extension(index, file) < 0)
+		return -1;
 
 	/* write the rename conflict extension */
 	if (index->names.length > 0 && write_name_extension(index, file) < 0)
@@ -2266,6 +2299,7 @@ typedef struct read_tree_data {
 	git_vector *old_entries;
 	git_vector *new_entries;
 	git_vector_cmp entry_cmp;
+	git_tree_cache *tree;
 } read_tree_data;
 
 static int read_tree_cb(
@@ -2327,6 +2361,9 @@ int git_index_read_tree(git_index *index, const git_tree *tree)
 	data.new_entries = &entries;
 	data.entry_cmp   = index->entries_search;
 
+	index->tree = NULL;
+	git_pool_clear(&index->tree_pool);
+
 	if (index_sort_if_needed(index, true) < 0)
 		return -1;
 
@@ -2347,6 +2384,10 @@ int git_index_read_tree(git_index *index, const git_tree *tree)
 	}
 
 	git_vector_free(&entries);
+	if (error < 0)
+		return error;
+
+	error = git_tree_cache_read_tree(&index->tree, tree, &index->tree_pool);
 
 	return error;
 }

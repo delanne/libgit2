@@ -10,6 +10,7 @@
 #include "common.h"
 #include "types.h"
 #include "oid.h"
+#include "oidarray.h"
 #include "checkout.h"
 #include "index.h"
 
@@ -321,6 +322,21 @@ GIT_EXTERN(int) git_merge_base(
 	const git_oid *two);
 
 /**
+ * Find merge bases between two commits
+ *
+ * @param out array in which to store the resulting ids
+ * @param repo the repository where the commits exist
+ * @param one one of the commits
+ * @param two the other commit
+ * @return 0 on success, GIT_ENOTFOUND if not found or error code
+ */
+GIT_EXTERN(int) git_merge_bases(
+	git_oidarray *out,
+	git_repository *repo,
+	const git_oid *one,
+	const git_oid *two);
+
+/**
  * Find a merge base given a list of commits
  *
  * @param out the OID of a merge base considering all the commits
@@ -331,6 +347,21 @@ GIT_EXTERN(int) git_merge_base(
  */
 GIT_EXTERN(int) git_merge_base_many(
 	git_oid *out,
+	git_repository *repo,
+	size_t length,
+	const git_oid input_array[]);
+
+/**
+ * Find all merge bases given a list of commits
+ *
+ * @param out array in which to store the resulting ids
+ * @param repo the repository where the commits exist
+ * @param length The number of commits in the provided `input_array`
+ * @param input_array oids of the commits
+ * @return Zero on success; GIT_ENOTFOUND or -1 on failure.
+ */
+GIT_EXTERN(int) git_merge_bases_many(
+	git_oidarray *out,
 	git_repository *repo,
 	size_t length,
 	const git_oid input_array[]);

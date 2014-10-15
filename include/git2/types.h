@@ -171,6 +171,9 @@ typedef struct git_reference git_reference;
 /** Iterator for references */
 typedef struct git_reference_iterator  git_reference_iterator;
 
+/** Transactional interface to references */
+typedef struct git_transaction git_transaction;
+
 /** Merge heads, the input to merge */
 typedef struct git_merge_head git_merge_head;
 
@@ -198,12 +201,12 @@ typedef enum {
 
 /** Valid modes for index and tree entries. */
 typedef enum {
-	GIT_FILEMODE_NEW					= 0000000,
-	GIT_FILEMODE_TREE					= 0040000,
-	GIT_FILEMODE_BLOB					= 0100644,
-	GIT_FILEMODE_BLOB_EXECUTABLE		= 0100755,
-	GIT_FILEMODE_LINK					= 0120000,
-	GIT_FILEMODE_COMMIT					= 0160000,
+	GIT_FILEMODE_UNREADABLE          = 0000000,
+	GIT_FILEMODE_TREE                = 0040000,
+	GIT_FILEMODE_BLOB                = 0100644,
+	GIT_FILEMODE_BLOB_EXECUTABLE     = 0100755,
+	GIT_FILEMODE_LINK                = 0120000,
+	GIT_FILEMODE_COMMIT              = 0160000,
 } git_filemode_t;
 
 typedef struct git_refspec git_refspec;
@@ -242,6 +245,55 @@ typedef struct git_transfer_progress {
  * @param payload Payload provided by caller
  */
 typedef int (*git_transfer_progress_cb)(const git_transfer_progress *stats, void *payload);
+
+/**
+ * Type for messages delivered by the transport.  Return a negative value
+ * to cancel the network operation.
+ *
+ * @param str The message from the transport
+ * @param len The length of the message
+ * @param payload Payload provided by the caller
+ */
+typedef int (*git_transport_message_cb)(const char *str, int len, void *payload);
+
+/**
+ * Type of host certificate structure that is passed to the check callback
+ */
+typedef enum git_cert_t {
+        /**
+         * The `data` argument to the callback will be a pointer to
+         * the DER-encoded data.
+         */
+	GIT_CERT_X509,
+        /**
+         * The `data` argument to the callback will be a pointer to a
+         * `git_cert_hostkey` structure.
+         */
+	GIT_CERT_HOSTKEY_LIBSSH2,
+} git_cert_t;
+
+/**
+ * Parent type for `git_cert_hostkey` and `git_cert_x509`.
+ */
+typedef struct {
+	/**
+	 * Type of certificate. A `GIT_CERT_` value.
+	 */
+	git_cert_t cert_type;
+} git_cert;
+
+/**
+ * Callback for the user's custom certificate checks.
+ *
+ * @param type The type of certificate or host info, SSH or X.509
+ * @param data The data for the certificate or host info
+ * @param len The size of the certificate or host info
+ * @param valid Whether the libgit2 checks (OpenSSL or WinHTTP) think
+ * this certificate is valid
+ * @param host Hostname of the host libgit2 connected to
+ * @param payload Payload provided by the caller
+ */
+typedef int (*git_transport_certificate_check_cb)(git_cert *cert, int valid, const char *host, void *payload);
 
 /**
  * Opaque structure representing a submodule.
